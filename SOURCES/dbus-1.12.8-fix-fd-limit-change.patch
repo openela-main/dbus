@@ -1,0 +1,201 @@
+From 94bacc6955e563a7e698e53151a75323279a9f45 Mon Sep 17 00:00:00 2001
+From: Simon McVittie <smcv@collabora.com>
+Date: Mon, 11 Mar 2019 09:03:39 +0000
+Subject: [PATCH] bus: Try to raise soft fd limit to match hard limit
+
+Linux systems have traditionally set the soft limit to 1024 and the hard
+limit to 4096. Recent versions of systemd keep the soft fd limit at
+1024 to avoid breaking programs that still use select(), but raise the
+hard limit to 512*1024, while in recent Debian versions a complicated
+interaction between components gives a soft limit of 1024 and a hard
+limit of 1024*1024. If we can, we might as well elevate our soft limit
+to match the hard limit, minimizing the chance that we will run out of
+file descriptor slots.
+
+Unlike the previous code to raise the hard and soft limits to at least
+65536, we do this even if we don't have privileges: privileges are
+unnecessary to raise the soft limit up to the hard limit.
+
+If we *do* have privileges, we also continue to raise the hard and soft
+limits to at least 65536 if they weren't already that high, making
+it harder to carry out a denial of service attack on the system bus on
+systems that use the traditional limit (CVE-2014-7824).
+
+As was previously the case on the system bus, we'll drop the limits back
+to our initial limits before we execute a subprocess for traditional
+(non-systemd) activation, if enabled.
+
+systemd activation doesn't involve us starting subprocesses at all,
+so in both cases activated services will still inherit the same limits
+they did previously.
+
+This change also fixes a bug when the hard limit is very large but
+the soft limit is not, for example seen as a regression when upgrading
+to systemd >= 240 (Debian #928877). In such environments, dbus-daemon
+would previously have changed its fd limit to 64K soft/64K hard. Because
+this hard limit is less than its original hard limit, it was unable to
+restore its original hard limit as intended when carrying out traditional
+activation, leaving activated subprocesses with unintended limits (while
+logging a warning).
+
+Reviewed-by: Lennart Poettering <lennart@poettering.net>
+[smcv: Correct a comment based on Lennart's review, reword commit message]
+Signed-off-by: Simon McVittie <smcv@collabora.com>
+(cherry picked from commit 7eacbfece70f16bb54d0f3ac51f87ae398759ef5)
+[smcv: Mention that this also fixes Debian #928877]
+---
+ bus/bus.c                     |  8 ++---
+ dbus/dbus-sysdeps-util-unix.c | 64 +++++++++++++++++++++--------------
+ dbus/dbus-sysdeps-util-win.c  |  3 +-
+ dbus/dbus-sysdeps.h           |  3 +-
+ 4 files changed, 44 insertions(+), 34 deletions(-)
+
+diff --git a/bus/bus.c b/bus/bus.c
+index 30ce4e10..2ad8e789 100644
+--- a/bus/bus.c
++++ b/bus/bus.c
+@@ -693,11 +693,11 @@ raise_file_descriptor_limit (BusContext      *context)
+   /* We used to compute a suitable rlimit based on the configured number
+    * of connections, but that breaks down as soon as we allow fd-passing,
+    * because each connection is allowed to pass 64 fds to us, and if
+-   * they all did, we'd hit kernel limits. We now hard-code 64k as a
+-   * good limit, like systemd does: that's enough to avoid DoS from
+-   * anything short of multiple uids conspiring against us.
++   * they all did, we'd hit kernel limits. We now hard-code a good
++   * limit that is enough to avoid DoS from anything short of multiple
++   * uids conspiring against us, much like systemd does.
+    */
+-  if (!_dbus_rlimit_raise_fd_limit_if_privileged (65536, &error))
++  if (!_dbus_rlimit_raise_fd_limit (&error))
+     {
+       bus_context_log (context, DBUS_SYSTEM_LOG_WARNING,
+                        "%s: %s", error.name, error.message);
+diff --git a/dbus/dbus-sysdeps-util-unix.c b/dbus/dbus-sysdeps-util-unix.c
+index 2be5b779..7c4c3604 100644
+--- a/dbus/dbus-sysdeps-util-unix.c
++++ b/dbus/dbus-sysdeps-util-unix.c
+@@ -406,23 +406,15 @@ _dbus_rlimit_save_fd_limit (DBusError *error)
+   return self;
+ }
+ 
++/* Enough fds that we shouldn't run out, even if several uids work
++ * together to carry out a denial-of-service attack. This happens to be
++ * the same number that systemd < 234 would normally use. */
++#define ENOUGH_FDS 65536
++
+ dbus_bool_t
+-_dbus_rlimit_raise_fd_limit_if_privileged (unsigned int  desired,
+-                                           DBusError    *error)
++_dbus_rlimit_raise_fd_limit (DBusError *error)
+ {
+-  struct rlimit lim;
+-
+-  /* No point to doing this practically speaking
+-   * if we're not uid 0.  We expect the system
+-   * bus to use this before we change UID, and
+-   * the session bus takes the Linux default,
+-   * currently 1024 for cur and 4096 for max.
+-   */
+-  if (getuid () != 0)
+-    {
+-      /* not an error, we're probably the session bus */
+-      return TRUE;
+-    }
++  struct rlimit old, lim;
+ 
+   if (getrlimit (RLIMIT_NOFILE, &lim) < 0)
+     {
+@@ -431,22 +423,43 @@ _dbus_rlimit_raise_fd_limit_if_privileged (unsigned int  desired,
+       return FALSE;
+     }
+ 
+-  if (lim.rlim_cur == RLIM_INFINITY || lim.rlim_cur >= desired)
++  old = lim;
++
++  if (getuid () == 0)
+     {
+-      /* not an error, everything is fine */
+-      return TRUE;
++      /* We are privileged, so raise the soft limit to at least
++       * ENOUGH_FDS, and the hard limit to at least the desired soft
++       * limit. This assumes we can exercise CAP_SYS_RESOURCE on Linux,
++       * or other OSs' equivalents. */
++      if (lim.rlim_cur != RLIM_INFINITY &&
++          lim.rlim_cur < ENOUGH_FDS)
++        lim.rlim_cur = ENOUGH_FDS;
++
++      if (lim.rlim_max != RLIM_INFINITY &&
++          lim.rlim_max < lim.rlim_cur)
++        lim.rlim_max = lim.rlim_cur;
+     }
+ 
+-  /* Ignore "maximum limit", assume we have the "superuser"
+-   * privileges.  On Linux this is CAP_SYS_RESOURCE.
+-   */
+-  lim.rlim_cur = lim.rlim_max = desired;
++  /* Raise the soft limit to match the hard limit, which we can do even
++   * if we are unprivileged. In particular, systemd >= 240 will normally
++   * set rlim_cur to 1024 and rlim_max to 512*1024, recent Debian
++   * versions end up setting rlim_cur to 1024 and rlim_max to 1024*1024,
++   * and older and non-systemd Linux systems would typically set rlim_cur
++   * to 1024 and rlim_max to 4096. */
++  if (lim.rlim_max == RLIM_INFINITY || lim.rlim_cur < lim.rlim_max)
++    lim.rlim_cur = lim.rlim_max;
++
++  /* Early-return if there is nothing to do. */
++  if (lim.rlim_max == old.rlim_max &&
++      lim.rlim_cur == old.rlim_cur)
++    return TRUE;
+ 
+   if (setrlimit (RLIMIT_NOFILE, &lim) < 0)
+     {
+       dbus_set_error (error, _dbus_error_from_errno (errno),
+-                      "Failed to set fd limit to %u: %s",
+-                      desired, _dbus_strerror (errno));
++                      "Failed to set fd limit to %lu: %s",
++                      (unsigned long) lim.rlim_cur,
++                      _dbus_strerror (errno));
+       return FALSE;
+     }
+ 
+@@ -485,8 +498,7 @@ _dbus_rlimit_save_fd_limit (DBusError *error)
+ }
+ 
+ dbus_bool_t
+-_dbus_rlimit_raise_fd_limit_if_privileged (unsigned int  desired,
+-                                           DBusError    *error)
++_dbus_rlimit_raise_fd_limit (DBusError *error)
+ {
+   fd_limit_not_supported (error);
+   return FALSE;
+diff --git a/dbus/dbus-sysdeps-util-win.c b/dbus/dbus-sysdeps-util-win.c
+index 1ef4ae6c..1c1d9f7d 100644
+--- a/dbus/dbus-sysdeps-util-win.c
++++ b/dbus/dbus-sysdeps-util-win.c
+@@ -273,8 +273,7 @@ _dbus_rlimit_save_fd_limit (DBusError *error)
+ }
+ 
+ dbus_bool_t
+-_dbus_rlimit_raise_fd_limit_if_privileged (unsigned int  desired,
+-                                           DBusError    *error)
++_dbus_rlimit_raise_fd_limit (DBusError *error)
+ {
+   fd_limit_not_supported (error);
+   return FALSE;
+diff --git a/dbus/dbus-sysdeps.h b/dbus/dbus-sysdeps.h
+index ef786ecc..0b9d7696 100644
+--- a/dbus/dbus-sysdeps.h
++++ b/dbus/dbus-sysdeps.h
+@@ -698,8 +698,7 @@ dbus_bool_t _dbus_replace_install_prefix (DBusString *path);
+ typedef struct DBusRLimit DBusRLimit;
+ 
+ DBusRLimit     *_dbus_rlimit_save_fd_limit                 (DBusError    *error);
+-dbus_bool_t     _dbus_rlimit_raise_fd_limit_if_privileged  (unsigned int  desired,
+-                                                            DBusError    *error);
++dbus_bool_t     _dbus_rlimit_raise_fd_limit                (DBusError    *error);
+ dbus_bool_t     _dbus_rlimit_restore_fd_limit              (DBusRLimit   *saved,
+                                                             DBusError    *error);
+ void            _dbus_rlimit_free                          (DBusRLimit   *lim);
+-- 
+GitLab
+
