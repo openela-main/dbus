@@ -1,0 +1,28 @@
+#!/bin/bash
+# This script ensures the dbus-daemon is killed when the session closes.
+# It's used by SSH sessions that have X forwarding (since the X display
+# may outlive the session in those cases)
+[ $# != 1 ] && exit 1
+
+exec >& /dev/null
+
+MONITOR_READY_FILE=$(mktemp dbus-session-monitor.XXXXXX --tmpdir)
+
+trap 'rm -f "${MONITOR_READY_FILE}"; kill -TERM $1; kill -HUP $(jobs -p)' EXIT
+
+export GVFS_DISABLE_FUSE=1
+coproc SESSION_MONITOR (gio monitor -f "/run/systemd/sessions/${XDG_SESSION_ID}" "${MONITOR_READY_FILE}")
+
+# Poll until the gio monitor command is actively monitoring
+until
+    touch "${MONITOR_READY_FILE}"
+    read -t 0.5 -u ${SESSION_MONITOR[0]}
+do
+    continue
+done
+
+# Block until the session is closed
+while grep -q ^State=active <(loginctl show-session $XDG_SESSION_ID)
+do
+    read -u ${SESSION_MONITOR[0]}
+done
