@@ -23,7 +23,7 @@
 Name:    dbus
 Epoch:   1
 Version: 1.12.20
-Release: 7%{?dist}.1
+Release: 8%{?dist}
 Summary: D-BUS message bus
 
 # The effective license of the majority of the package, including the shared
@@ -49,7 +49,7 @@ Patch1: dbus-1.12.20-CVE-2022-42010.patch
 Patch2: dbus-1.12.20-CVE-2022-42011.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=2133635
 Patch3: dbus-1.12.20-CVE-2022-42012.patch
-# https://bugzilla.redhat.com/show_bug.cgi?id=2213401
+# https://bugzilla.redhat.com/show_bug.cgi?id=2213402
 Patch4: dbus-1.12.20-CVE-2023-34969.patch
 
 BuildRequires: autoconf-archive
@@ -456,8 +456,8 @@ systemctl --no-reload --global preset dbus-daemon.service &>/dev/null || :
 
 
 %changelog
-* Mon Jun 12 2023 David King <amigadave@amigadave.com> - 1:1.12.20-7.1
-- Fix CVE-2023-34969 (#2213401)
+* Mon Jun 12 2023 David King <amigadave@amigadave.com> - 1:1.12.20-8
+- Fix CVE-2023-34969 (#2213402)
 
 * Tue Oct 18 2022 David King <amigadave@amigadave.com> - 1:1.12.20-7
 - Fix CVE-2022-42010 (#2133647)
