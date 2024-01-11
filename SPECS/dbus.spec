@@ -19,7 +19,7 @@
 Name:    dbus
 Epoch:   1
 Version: 1.12.8
-Release: 24%{?dist}.1
+Release: 26%{?dist}
 Summary: D-BUS message bus
 
 Group:   System Environment/Libraries
@@ -47,7 +47,7 @@ Patch4: dbus-1.20.8-CVE-2022-42010.patch
 Patch5: dbus-1.20.8-CVE-2022-42011.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=2133633
 Patch6: dbus-1.20.8-CVE-2022-42012.patch
-# https://bugzilla.redhat.com/show_bug.cgi?id=2213399
+# https://bugzilla.redhat.com/show_bug.cgi?id=2213400
 Patch7: dbus-1.12.8-fix-CVE-2023-34969.patch
 
 BuildRequires: autoconf-archive
@@ -423,8 +423,13 @@ popd
 %{_includedir}/*
 
 %changelog
-* Mon Jun 19 2023 David King <dking@redhat.com> - 1:1.12.8-24.1
-- Fix CVE-2023-34969 (#2213399)
+* Mon Jun 19 2023 David King <amigadave@amigadave.com> - 1.12.8-26
+- Fix CVE-2023-34969 (#2213400)
+
+* Mon Apr 24 2023 Ray Strode <rstrode@redhat.com> - 1.12.8-25
+- Ensure only one dbus-daemon is spawned for all shells sharing
+  a single connection.
+  Resolves: #2189201
 
 * Wed Oct 19 2022 David King <dking@redhat.com> - 1:1.12.8-24
 - Fix CVE-2022-42010 (#2133645)

@@ -7,8 +7,10 @@
 exec >& /dev/null
 
 MONITOR_READY_FILE=$(mktemp dbus-session-monitor.XXXXXX --tmpdir)
+DBUS_SESSIONS="${XDG_RUNTIME_DIR}/dbus-1/sessions"
+DBUS_SESSION_ADDRESS_FILE="${DBUS_SESSIONS}/${XDG_SESSION_ID}"
 
-trap 'rm -f "${MONITOR_READY_FILE}"; kill -TERM $1; kill -HUP $(jobs -p)' EXIT
+trap 'rm -f "${MONITOR_READY_FILE}"; rm -f "${DBUS_SESSION_ADDRESS_FILE}"; kill -TERM $1; kill -HUP $(jobs -p)' EXIT
 
 export GVFS_DISABLE_FUSE=1
 coproc SESSION_MONITOR (gio monitor -f "/run/systemd/sessions/${XDG_SESSION_ID}" "${MONITOR_READY_FILE}")
