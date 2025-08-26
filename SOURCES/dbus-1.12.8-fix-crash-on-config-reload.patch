@@ -1,0 +1,465 @@
+diff --git a/bus/bus.c b/bus/bus.c
+index 2ad8e78..f510073 100644
+--- a/bus/bus.c
++++ b/bus/bus.c
+@@ -1285,11 +1285,42 @@ bus_context_get_policy (BusContext *context)
+ BusClientPolicy*
+ bus_context_create_client_policy (BusContext      *context,
+                                   DBusConnection  *connection,
++                                  BusClientPolicy *previous,
+                                   DBusError       *error)
+ {
++  BusClientPolicy *client;
++  DBusError local_error = DBUS_ERROR_INIT;
++  const char *conn;
++  const char *loginfo;
++
+   _DBUS_ASSERT_ERROR_IS_CLEAR (error);
+-  return bus_policy_create_client_policy (context->policy, connection,
+-                                          error);
++
++  client = bus_policy_create_client_policy (context->policy, connection,
++                                            &local_error);
++
++  /* On success, use new policy */
++  if (client != NULL)
++    return client;
++
++  /* On failure while setting up a new connection, fail */
++  if (previous == NULL)
++    {
++      dbus_move_error (&local_error, error);
++      return NULL;
++    }
++
++  /* On failure while reloading, keep the previous policy */
++  conn = bus_connection_get_name (connection);
++  loginfo = bus_connection_get_loginfo (connection);
++
++  if (conn == NULL)
++    conn = "(inactive)";
++
++  bus_context_log (context, DBUS_SYSTEM_LOG_WARNING,
++                   "Unable to reload policy for connection \"%s\" (%s), "
++                   "keeping current policy: %s",
++                   conn, loginfo, local_error.message);
++  return bus_client_policy_ref (previous);
+ }
+ 
+ int
+diff --git a/bus/bus.h b/bus/bus.h
+index 2e0de82..6ebea2c 100644
+--- a/bus/bus.h
++++ b/bus/bus.h
+@@ -109,6 +109,7 @@ BusPolicy*        bus_context_get_policy                         (BusContext
+ 
+ BusClientPolicy*  bus_context_create_client_policy               (BusContext       *context,
+                                                                   DBusConnection   *connection,
++                                                                  BusClientPolicy  *previous,
+                                                                   DBusError        *error);
+ int               bus_context_get_activation_timeout             (BusContext       *context);
+ int               bus_context_get_auth_timeout                   (BusContext       *context);
+diff --git a/bus/connection.c b/bus/connection.c
+index 584f07b..48c2ae4 100644
+--- a/bus/connection.c
++++ b/bus/connection.c
+@@ -1008,7 +1008,7 @@ bus_connection_get_unix_groups  (DBusConnection   *connection,
+ 
+   if (dbus_connection_get_unix_user (connection, &uid))
+     {
+-      if (!_dbus_unix_groups_from_uid (uid, groups, n_groups))
++      if (!_dbus_unix_groups_from_uid (uid, groups, n_groups, error))
+         {
+           _dbus_verbose ("Did not get any groups for UID %lu\n",
+                          uid);
+@@ -1559,6 +1559,7 @@ bus_connection_complete (DBusConnection   *connection,
+ 
+   d->policy = bus_context_create_client_policy (d->connections->context,
+                                                 connection,
++                                                NULL,
+                                                 error);
+ 
+   /* we may have a NULL policy on OOM or error getting list of
+@@ -1635,22 +1636,27 @@ bus_connections_reload_policy (BusConnections *connections,
+        link;
+        link = _dbus_list_get_next_link (&(connections->completed), link))
+     {
++      BusClientPolicy *policy;
++
+       connection = link->data;
+       d = BUS_CONNECTION_DATA (connection);
+       _dbus_assert (d != NULL);
+       _dbus_assert (d->policy != NULL);
+ 
+-      bus_client_policy_unref (d->policy);
+-      d->policy = bus_context_create_client_policy (connections->context,
++      policy = bus_context_create_client_policy (connections->context,
+                                                     connection,
++                                                    d->policy,
+                                                     error);
+-      if (d->policy == NULL)
++      if (policy == NULL)
+         {
+           _dbus_verbose ("Failed to create security policy for connection %p\n",
+                       connection);
+           _DBUS_ASSERT_ERROR_IS_SET (error);
+           return FALSE;
+         }
++
++      bus_client_policy_unref (d->policy);
++      d->policy = policy;
+     }
+ 
+   return TRUE;
+diff --git a/bus/policy.c b/bus/policy.c
+index a37be80..6c22a10 100644
+--- a/bus/policy.c
++++ b/bus/policy.c
+@@ -450,7 +450,7 @@ bus_policy_allow_unix_user (BusPolicy        *policy,
+   int n_group_ids;
+ 
+   /* On OOM or error we always reject the user */
+-  if (!_dbus_unix_groups_from_uid (uid, &group_ids, &n_group_ids))
++  if (!_dbus_unix_groups_from_uid (uid, &group_ids, &n_group_ids, NULL))
+     {
+       _dbus_verbose ("Did not get any groups for UID %lu\n",
+                      uid);
+diff --git a/dbus/dbus-sysdeps-util-unix.c b/dbus/dbus-sysdeps-util-unix.c
+index 7c4c360..47749d1 100644
+--- a/dbus/dbus-sysdeps-util-unix.c
++++ b/dbus/dbus-sysdeps-util-unix.c
+@@ -980,14 +980,16 @@ _dbus_parse_unix_group_from_config (const DBusString  *groupname,
+  * @param uid the UID
+  * @param group_ids return location for array of group IDs
+  * @param n_group_ids return location for length of returned array
++ * @param error error location
+  * @returns #TRUE if the UID existed and we got some credentials
+  */
+ dbus_bool_t
+ _dbus_unix_groups_from_uid (dbus_uid_t            uid,
+                             dbus_gid_t          **group_ids,
+-                            int                  *n_group_ids)
++                            int                  *n_group_ids,
++                            DBusError            *error)
+ {
+-  return _dbus_groups_from_uid (uid, group_ids, n_group_ids);
++  return _dbus_groups_from_uid (uid, group_ids, n_group_ids, error);
+ }
+ 
+ /**
+diff --git a/dbus/dbus-sysdeps-util-win.c b/dbus/dbus-sysdeps-util-win.c
+index 1c1d9f7..4b4098d 100644
+--- a/dbus/dbus-sysdeps-util-win.c
++++ b/dbus/dbus-sysdeps-util-win.c
+@@ -647,6 +647,13 @@ dbus_bool_t _dbus_windows_user_is_process_owner (const char *windows_sid)
+   unix emulation functions - should be removed sometime in the future
+  =====================================================================*/
+ 
++static void
++set_unix_uid_unsupported (DBusError *error)
++{
++  dbus_set_error (error, DBUS_ERROR_NOT_SUPPORTED,
++                  "UNIX user IDs not supported on Windows");
++}
++
+ /**
+  * Checks to see if the UNIX user ID is at the console.
+  * Should always fail on Windows (set the error to
+@@ -660,8 +667,7 @@ dbus_bool_t
+ _dbus_unix_user_is_at_console (dbus_uid_t         uid,
+                                DBusError         *error)
+ {
+-  dbus_set_error (error, DBUS_ERROR_NOT_SUPPORTED,
+-                  "UNIX user IDs not supported on Windows\n");
++  set_unix_uid_unsupported (error);
+   return FALSE;
+ }
+ 
+@@ -705,13 +711,16 @@ _dbus_parse_unix_user_from_config (const DBusString  *username,
+  * @param uid the UID
+  * @param group_ids return location for array of group IDs
+  * @param n_group_ids return location for length of returned array
++ * @param error error location
+  * @returns #TRUE if the UID existed and we got some credentials
+  */
+ dbus_bool_t
+ _dbus_unix_groups_from_uid (dbus_uid_t            uid,
+                             dbus_gid_t          **group_ids,
+-                            int                  *n_group_ids)
++                            int                  *n_group_ids,
++                            DBusError            *error)
+ {
++  set_unix_uid_unsupported (error);
+   return FALSE;
+ }
+ 
+diff --git a/dbus/dbus-sysdeps.h b/dbus/dbus-sysdeps.h
+index 9be587b..054c4bd 100644
+--- a/dbus/dbus-sysdeps.h
++++ b/dbus/dbus-sysdeps.h
+@@ -252,7 +252,8 @@ dbus_bool_t _dbus_parse_unix_group_from_config  (const DBusString  *groupname,
+                                                  dbus_gid_t        *gid_p);
+ dbus_bool_t _dbus_unix_groups_from_uid          (dbus_uid_t         uid,
+                                                  dbus_gid_t       **group_ids,
+-                                                 int               *n_group_ids);
++                                                 int               *n_group_ids,
++                                                 DBusError         *error);
+ dbus_bool_t _dbus_unix_user_is_at_console       (dbus_uid_t         uid,
+                                                  DBusError         *error);
+ dbus_bool_t _dbus_unix_user_is_process_owner    (dbus_uid_t         uid);
+diff --git a/dbus/dbus-userdb-util.c b/dbus/dbus-userdb-util.c
+index 44a1a78..2ce01b7 100644
+--- a/dbus/dbus-userdb-util.c
++++ b/dbus/dbus-userdb-util.c
+@@ -382,31 +382,35 @@ _dbus_user_database_get_gid (DBusUserDatabase     *db,
+  * @param uid the UID
+  * @param group_ids return location for array of group IDs
+  * @param n_group_ids return location for length of returned array
++ * @param error error to fill in on failure
+  * @returns #TRUE if the UID existed and we got some credentials
+  */
+ dbus_bool_t
+ _dbus_groups_from_uid (dbus_uid_t         uid,
+                        dbus_gid_t       **group_ids,
+-                       int               *n_group_ids)
++                       int               *n_group_ids,
++                       DBusError         *error)
+ {
+   DBusUserDatabase *db;
+   const DBusUserInfo *info;
+   *group_ids = NULL;
+   *n_group_ids = 0;
+ 
+-  /* FIXME: this can't distinguish ENOMEM from other errors */
+   if (!_dbus_user_database_lock_system ())
+-    return FALSE;
++    {
++      _DBUS_SET_OOM (error);
++      return FALSE;
++    }
+ 
+   db = _dbus_user_database_get_system ();
+   if (db == NULL)
+     {
++      _DBUS_SET_OOM (error);
+       _dbus_user_database_unlock_system ();
+       return FALSE;
+     }
+ 
+-  if (!_dbus_user_database_get_uid (db, uid,
+-                                    &info, NULL))
++  if (!_dbus_user_database_get_uid (db, uid, &info, error))
+     {
+       _dbus_user_database_unlock_system ();
+       return FALSE;
+@@ -419,6 +423,7 @@ _dbus_groups_from_uid (dbus_uid_t         uid,
+       *group_ids = dbus_new (dbus_gid_t, info->n_group_ids);
+       if (*group_ids == NULL)
+         {
++          _DBUS_SET_OOM (error);
+ 	  _dbus_user_database_unlock_system ();
+           return FALSE;
+         }
+@@ -449,7 +454,7 @@ _dbus_userdb_test (const char *test_data_dir)
+   dbus_uid_t uid;
+   unsigned long *group_ids;
+   int n_group_ids, i;
+-  DBusError error;
++  DBusError error = DBUS_ERROR_INIT;
+ 
+   if (!_dbus_username_from_current_process (&username))
+     _dbus_assert_not_reached ("didn't get username");
+@@ -460,7 +465,7 @@ _dbus_userdb_test (const char *test_data_dir)
+   if (!_dbus_get_user_id (username, &uid))
+     _dbus_assert_not_reached ("didn't get uid");
+ 
+-  if (!_dbus_groups_from_uid (uid, &group_ids, &n_group_ids))
++  if (!_dbus_groups_from_uid (uid, &group_ids, &n_group_ids, &error))
+     _dbus_assert_not_reached ("didn't get groups");
+ 
+   printf ("    Current user: %s homedir: %s gids:",
+diff --git a/dbus/dbus-userdb.h b/dbus/dbus-userdb.h
+index 53fc90b..cdc1f6d 100644
+--- a/dbus/dbus-userdb.h
++++ b/dbus/dbus-userdb.h
+@@ -111,7 +111,8 @@ dbus_bool_t _dbus_credentials_from_uid          (dbus_uid_t         user_id,
+                                                  DBusCredentials   *credentials);
+ dbus_bool_t _dbus_groups_from_uid		(dbus_uid_t            uid,
+                                                  dbus_gid_t          **group_ids,
+-                                                 int                  *n_group_ids);
++                                                 int                  *n_group_ids,
++                                                 DBusError            *error);
+ DBUS_PRIVATE_EXPORT
+ dbus_bool_t _dbus_is_console_user               (dbus_uid_t         uid,
+                                                  DBusError         *error);
+diff --git a/test/Makefile.am b/test/Makefile.am
+index 6a6e1a3..c7d1e50 100644
+--- a/test/Makefile.am
++++ b/test/Makefile.am
+@@ -121,6 +121,9 @@ test_server_oom_LDADD = libdbus-testutils.la $(GLIB_LIBS)
+ test_syslog_SOURCES = internals/syslog.c
+ test_syslog_LDADD = libdbus-testutils.la $(GLIB_LIBS)
+ 
++test_userdb_SOURCES = internals/userdb.c
++test_userdb_LDADD =  libdbus-testutils.la $(GLIB_LIBS)
++
+ test_variant_SOURCES = internals/variant.c
+ test_variant_LDADD = libdbus-testutils.la $(GLIB_LIBS)
+ 
+@@ -181,6 +184,7 @@ installable_tests += \
+ 	test-syntax \
+ 	test-syslog \
+ 	test-uid-permissions \
++	test-userdb \
+ 	test-variant \
+ 	$(NULL)
+ 
+diff --git a/test/internals/userdb.c b/test/internals/userdb.c
+new file mode 100644
+index 0000000..905791b
+--- /dev/null
++++ b/test/internals/userdb.c
+@@ -0,0 +1,143 @@
++/*
++ * Copyright © 2023 Collabora Ltd.
++ * SPDX-License-Identifier: MIT
++ */
++
++#include <config.h>
++
++#include <glib.h>
++
++#include <dbus/dbus.h>
++#include "dbus/dbus-sysdeps.h"
++#include "test-utils-glib.h"
++
++#ifdef DBUS_UNIX
++#include <errno.h>
++#include <pwd.h>
++#include <sys/types.h>
++#include <unistd.h>
++
++#include "dbus/dbus-sysdeps-unix.h"
++#include "dbus/dbus-userdb.h"
++#endif
++
++typedef struct
++{
++  int dummy;
++} Fixture;
++
++static void
++setup (Fixture *f G_GNUC_UNUSED,
++       gconstpointer context G_GNUC_UNUSED)
++{
++}
++
++static void
++test_groups_from_uid (Fixture *f,
++                      gconstpointer context G_GNUC_UNUSED)
++{
++  DBusError error = DBUS_ERROR_INIT;
++  dbus_gid_t *gids = NULL;
++  int n_gids = -1;
++  dbus_bool_t ret;
++#ifdef DBUS_UNIX
++  int i;
++#endif
++
++  /* We assume that uid 0 (root) is available on all Unix systems,
++   * so this should succeed */
++  ret = _dbus_unix_groups_from_uid (0, &gids, &n_gids, &error);
++
++#ifdef DBUS_UNIX
++  test_assert_no_error (&error);
++  g_assert_true (ret);
++  g_assert_cmpint (n_gids, >=, 0);
++
++  g_test_message ("Groups of uid 0:");
++
++  for (i = 0; i < n_gids; i++)
++    {
++      g_test_message ("[%d]: %ld", i, (long) gids[i]);
++      g_assert_cmpint (gids[i], >=, 0);
++    }
++#else
++  g_assert_cmpstr (error.name, ==, DBUS_ERROR_NOT_SUPPORTED);
++  g_assert_false (ret);
++  g_test_message ("Getting Unix groups on Windows failed as expected: %s: %s",
++                  error.name, error.message);
++  g_assert_null (gids);
++  g_assert_cmpint (n_gids, <=, 0);
++#endif
++
++  dbus_free (gids);
++  dbus_error_free (&error);
++
++#ifdef DBUS_UNIX
++  /* Assume that the current uid is something sensible */
++  ret = _dbus_unix_groups_from_uid (geteuid (), &gids, &n_gids, &error);
++  test_assert_no_error (&error);
++  g_assert_true (ret);
++  g_assert_cmpint (n_gids, >=, 0);
++
++  g_test_message ("Groups of uid %ld:", (long) geteuid ());
++
++  for (i = 0; i < n_gids; i++)
++    {
++      g_test_message ("[%d]: %ld", i, (long) gids[i]);
++      g_assert_cmpint (gids[i], >=, 0);
++    }
++
++  g_test_message ("Total: %i groups", n_gids);
++
++  dbus_free (gids);
++  dbus_error_free (&error);
++
++  errno = 0;
++
++  /* arbitrarily chosen, probably isn't a valid uid */
++  if (getpwuid (31337) == NULL)
++    {
++      g_test_message ("uid 31337 doesn't exist: %s",
++                      errno == 0 ? "(no errno)" : g_strerror (errno));
++      ret = _dbus_unix_groups_from_uid (31337, &gids, &n_gids, &error);
++      g_assert_nonnull (error.name);
++      g_assert_nonnull (error.message);
++      g_assert_false (ret);
++      g_test_message ("Getting groups from non-uid failed as expected: %s: %s",
++                      error.name, error.message);
++      /* The Unix implementation always clears gids/n_gids,
++       * even on failure, and even if they were uninitialized */
++      g_assert_null (gids);
++      g_assert_cmpint (n_gids, ==, 0);
++
++      dbus_free (gids);
++      dbus_error_free (&error);
++    }
++  else
++    {
++      g_test_skip ("against our expectations, uid 31337 exists on this system");
++    }
++#endif
++}
++
++static void
++teardown (Fixture *f G_GNUC_UNUSED,
++          gconstpointer context G_GNUC_UNUSED)
++{
++}
++
++int
++main (int argc,
++      char **argv)
++{
++  int ret;
++
++  test_init (&argc, &argv);
++
++  g_test_add ("/userdb/groups_from_uid",
++              Fixture, NULL, setup, test_groups_from_uid, teardown);
++
++  ret = g_test_run ();
++  dbus_shutdown ();
++  return ret;
++}

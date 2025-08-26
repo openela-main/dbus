@@ -19,7 +19,7 @@
 Name:    dbus
 Epoch:   1
 Version: 1.12.8
-Release: 26%{?dist}
+Release: 27%{?dist}
 Summary: D-BUS message bus
 
 Group:   System Environment/Libraries
@@ -49,6 +49,8 @@ Patch5: dbus-1.20.8-CVE-2022-42011.patch
 Patch6: dbus-1.20.8-CVE-2022-42012.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=2213400
 Patch7: dbus-1.12.8-fix-CVE-2023-34969.patch
+# https://issues.redhat.com/browse/RHEL-65330
+Patch8: dbus-1.12.8-fix-crash-on-config-reload.patch
 
 BuildRequires: autoconf-archive
 BuildRequires: libtool
@@ -423,6 +425,9 @@ popd
 %{_includedir}/*
 
 %changelog
+* Thu May 29 2025 Milan Crha <mcrha@redhat.com> - 1.12.8-27
+- Resolves: RHEL-65330 (Crash on configuration reload)
+
 * Mon Jun 19 2023 David King <amigadave@amigadave.com> - 1.12.8-26
 - Fix CVE-2023-34969 (#2213400)
 
