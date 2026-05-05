@@ -2,6 +2,7 @@
 if ( $?SSH_CONNECTION == 0 ) exit
 if ( $?XDG_SESSION_ID == 0) exit
 if ( $?DISPLAY == 0 ) exit
+if ( $DISPLAY =~ :* ) exit
 if ( $SHLVL > 1 ) exit
 
 set DBUS_SESSIONS = "${XDG_RUNTIME_DIR}/dbus-1/sessions"

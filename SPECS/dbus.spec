@@ -19,7 +19,7 @@
 Name:    dbus
 Epoch:   1
 Version: 1.12.8
-Release: 27%{?dist}
+Release: 28%{?dist}
 Summary: D-BUS message bus
 
 Group:   System Environment/Libraries
@@ -425,6 +425,9 @@ popd
 %{_includedir}/*
 
 %changelog
+* Wed Dec 10 2025 David King <dking@redhat.com> - 1:1.12.8-28
+- Fix SSH forwarding with csh (RHEL-4156)
+
 * Thu May 29 2025 Milan Crha <mcrha@redhat.com> - 1.12.8-27
 - Resolves: RHEL-65330 (Crash on configuration reload)
 
