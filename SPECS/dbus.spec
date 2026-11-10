@@ -23,7 +23,7 @@
 Name:    dbus
 Epoch:   1
 Version: 1.12.20
-Release: 8%{?dist}
+Release: 10%{?dist}
 Summary: D-BUS message bus
 
 # The effective license of the majority of the package, including the shared
@@ -42,6 +42,10 @@ Source5: dbus-daemon.service
 Source6: dbus.user.socket
 Source7: dbus-daemon.user.service
 Source8: dbus-systemd-sysusers.conf
+Source9: ssh-x-forwarding.csh
+Source10: ssh-x-forwarding.sh
+Source11: dbus-kill-process-with-session
+
 Patch0: 0001-tools-Use-Python3-for-GetAllMatchRules.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=2133647
 Patch1: dbus-1.12.20-CVE-2022-42010.patch
@@ -51,6 +55,8 @@ Patch2: dbus-1.12.20-CVE-2022-42011.patch
 Patch3: dbus-1.12.20-CVE-2022-42012.patch
 # https://bugzilla.redhat.com/show_bug.cgi?id=2213402
 Patch4: dbus-1.12.20-CVE-2023-34969.patch
+# https://redhat.atlassian.net/browse/RHEL-32117
+Patch5: dbus-1.12.20-fix-SAST-warnings.patch
 
 BuildRequires: autoconf-archive
 BuildRequires: libtool
@@ -238,6 +244,11 @@ install -Dp -m644 %{SOURCE5} %{buildroot}%{_unitdir}/dbus-daemon.service
 install -Dp -m644 %{SOURCE6} %{buildroot}%{_userunitdir}/dbus.socket
 install -Dp -m644 %{SOURCE7} %{buildroot}%{_userunitdir}/dbus-daemon.service
 install -Dp -m644 %{SOURCE8} %{buildroot}%{_sysusersdir}/dbus.conf
+
+# SSH forwarding snippets.
+install -Dp -m644 %{SOURCE9} %{buildroot}%{_sysconfdir}/profile.d/ssh-x-forwarding.csh
+install -p -m644 %{SOURCE10} %{buildroot}%{_sysconfdir}/profile.d/
+install -Dp -m755 %{SOURCE11} %{buildroot}%{_libexecdir}/dbus-1/dbus-kill-process-with-session
 
 # Obsolete, but still widely used, for drop-in configuration snippets.
 install --directory %{buildroot}%{_sysconfdir}/dbus-1/session.d
@@ -431,7 +442,9 @@ systemctl --no-reload --global preset dbus-daemon.service &>/dev/null || :
 
 %files x11
 %{_bindir}/dbus-launch
+%{_libexecdir}/dbus-1/dbus-kill-process-with-session
 %{_mandir}/man1/dbus-launch.1*
+%{_sysconfdir}/profile.d/ssh-x-forwarding.*
 %{_sysconfdir}/X11/xinit/xinitrc.d/00-start-message-bus.sh
 
 %files doc
@@ -456,6 +469,12 @@ systemctl --no-reload --global preset dbus-daemon.service &>/dev/null || :
 
 
 %changelog
+* Fri Jul 24 2026 David King <dking@redhat.com> - 1:1.12.20-10
+- Fix some SAST warnings (RHEL-32117)
+
+* Mon Apr 13 2026 David King <amigadave@amigadave.com> - 1:1.12.20-9
+- Add SSH forwarding snippets (RHEL-65490)
+
 * Mon Jun 12 2023 David King <amigadave@amigadave.com> - 1:1.12.20-8
 - Fix CVE-2023-34969 (#2213402)
 

@@ -1,0 +1,253 @@
+From 5d6b398e9598dea5622472363cb589393171972c Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 06:59:28 +0100
+Subject: [PATCH 1/5] test/thread-blocking.c: Fix a memory leak
+
+Free name inside the for loop. Found by Coverity.
+
+Bug-RedHat: https://bugzilla.redhat.com/show_bug.cgi?id=1938701
+---
+ test/thread-blocking.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/test/thread-blocking.c b/test/thread-blocking.c
+index e814dec3..92df9e4d 100644
+--- a/test/thread-blocking.c
++++ b/test/thread-blocking.c
+@@ -233,6 +233,8 @@ test_threads (Fixture *f,
+       f->client_caller_threads[i] = g_thread_new (name,
+                                                   client_caller_thread_cb,
+                                                   f);
++
++      g_free (name);
+     }
+ 
+   /* Wait for all caller threads to exit */
+-- 
+2.55.0
+
+
+From 5061e3f0df3549eb379c09e831704c07100abd2f Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 07:00:21 +0100
+Subject: [PATCH 2/5] tools/dbus-spam.c: Avoid a y2k38 truncation warning
+
+---
+ tools/dbus-spam.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/dbus-spam.c b/tools/dbus-spam.c
+index 192911cb..b8654111 100644
+--- a/tools/dbus-spam.c
++++ b/tools/dbus-spam.c
+@@ -169,7 +169,7 @@ dbus_test_tool_spam (int argc, char **argv)
+   dbus_bool_t flood = FALSE;
+   dbus_bool_t no_reply = FALSE;
+   unsigned int messages_per_conn = 0;
+-  unsigned int seed = time (NULL);
++  unsigned int seed = (unsigned int) time (NULL);
+   int n_random_sizes = 0;
+   unsigned int *random_sizes = NULL;
+ 
+-- 
+2.55.0
+
+
+From 33cd8e15ca5d4dc286a9f4c39a86a9efb1d8edf4 Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 07:01:46 +0100
+Subject: [PATCH 3/5] dbus-sysdeps-unix: Ensure hostip is initialised
+
+---
+ dbus/dbus-sysdeps-unix.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/dbus/dbus-sysdeps-unix.c b/dbus/dbus-sysdeps-unix.c
+index e511afc5..b501413b 100644
+--- a/dbus/dbus-sysdeps-unix.c
++++ b/dbus/dbus-sysdeps-unix.c
+@@ -4634,12 +4634,14 @@ _dbus_append_address_from_socket (DBusSocket  fd,
+       break;
+ #ifdef AF_INET6
+     case AF_INET6:
+-      _dbus_string_init_const (&path_str, hostip);
+       if (inet_ntop (AF_INET6, &socket.ipv6.sin6_addr, hostip, sizeof (hostip)))
+-        if (_dbus_string_append_printf (address, "tcp:family=ipv6,port=%u,host=",
+-                                        ntohs (socket.ipv6.sin6_port)) &&
+-            _dbus_address_append_escaped (address, &path_str))
+-          return TRUE;
++        {
++          _dbus_string_init_const (&path_str, hostip);
++          if (_dbus_string_append_printf (address, "tcp:family=ipv6,port=%u,host=",
++                                          ntohs (socket.ipv6.sin6_port)) &&
++              _dbus_address_append_escaped (address, &path_str))
++            return TRUE;
++        }
+       break;
+ #endif
+     default:
+-- 
+2.55.0
+
+
+From 7a92091c923d50980528c86e068dc1aa7fe138eb Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 07:02:43 +0100
+Subject: [PATCH 4/5] dbus-connection: Avoid a use-after-free
+
+---
+ dbus/dbus-connection.c | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/dbus/dbus-connection.c b/dbus/dbus-connection.c
+index c525b6dc..f2d81570 100644
+--- a/dbus/dbus-connection.c
++++ b/dbus/dbus-connection.c
+@@ -3866,27 +3866,31 @@ dbus_connection_borrow_message (DBusConnection *connection)
+   
+   CONNECTION_LOCK (connection);
+ 
++  _dbus_connection_ref_unlocked (connection);
++
+   _dbus_connection_acquire_dispatch (connection);
+ 
+   /* While a message is outstanding, the dispatch lock is held */
+   _dbus_assert (connection->message_borrowed == NULL);
+ 
+   connection->message_borrowed = _dbus_list_get_first (&connection->incoming_messages);
+-  
++
+   message = connection->message_borrowed;
+ 
+   check_disconnected_message_arrived_unlocked (connection, message);
+-  
++
+   /* Note that we KEEP the dispatch lock until the message is returned */
+   if (message == NULL)
+     _dbus_connection_release_dispatch (connection);
+ 
+   CONNECTION_UNLOCK (connection);
+ 
++  dbus_connection_unref (connection);
++
+   _dbus_message_trace_ref (message, -1, -1, "dbus_connection_borrow_message");
+ 
+   /* We don't update dispatch status until it's returned or stolen */
+-  
++
+   return message;
+ }
+ 
+@@ -4104,18 +4108,23 @@ dbus_connection_pop_message (DBusConnection *connection)
+     return NULL;
+   
+   CONNECTION_LOCK (connection);
++
++  _dbus_connection_ref_unlocked (connection);
++
+   _dbus_connection_acquire_dispatch (connection);
+   HAVE_LOCK_CHECK (connection);
+-  
++
+   message = _dbus_connection_pop_message_unlocked (connection);
+ 
+-  _dbus_verbose ("Returning popped message %p\n", message);    
++  _dbus_verbose ("Returning popped message %p\n", message);
+ 
+   _dbus_connection_release_dispatch (connection);
+ 
+   status = _dbus_connection_get_dispatch_status_unlocked (connection);
+   _dbus_connection_update_dispatch_status_and_unlock (connection, status);
+-  
++
++  dbus_connection_unref (connection);
++
+   return message;
+ }
+ 
+-- 
+2.55.0
+
+
+From fafdad30a1feb335b667d9f5abd8370f90652d70 Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 07:03:07 +0100
+Subject: [PATCH 5/5] dbus-spawn: Avoid unlikely use-after-free
+
+---
+ dbus/dbus-spawn.c | 14 ++++++++++----
+ 1 file changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/dbus/dbus-spawn.c b/dbus/dbus-spawn.c
+index 8ab529a4..a33c4768 100644
+--- a/dbus/dbus-spawn.c
++++ b/dbus/dbus-spawn.c
+@@ -547,9 +547,11 @@ close_socket_to_babysitter (DBusBabysitter *sitter)
+   if (sitter->sitter_watch != NULL)
+     {
+       _dbus_assert (sitter->watches != NULL);
++      _dbus_watch_ref (sitter->sitter_watch);
+       _dbus_watch_list_remove_watch (sitter->watches,  sitter->sitter_watch);
+       _dbus_watch_invalidate (sitter->sitter_watch);
+       _dbus_watch_unref (sitter->sitter_watch);
++      _dbus_watch_unref (sitter->sitter_watch);
+       sitter->sitter_watch = NULL;
+     }
+ 
+@@ -568,9 +570,11 @@ close_error_pipe_from_child (DBusBabysitter *sitter)
+   if (sitter->error_watch != NULL)
+     {
+       _dbus_assert (sitter->watches != NULL);
++      _dbus_watch_ref (sitter->error_watch);
+       _dbus_watch_list_remove_watch (sitter->watches,  sitter->error_watch);
+       _dbus_watch_invalidate (sitter->error_watch);
+       _dbus_watch_unref (sitter->error_watch);
++      _dbus_watch_unref (sitter->error_watch);
+       sitter->error_watch = NULL;
+     }
+ 
+@@ -1315,17 +1319,18 @@ _dbus_spawn_async_with_babysitter (DBusBabysitter          **sitter_p,
+       goto cleanup_and_fail;
+     }
+         
++  _dbus_watch_ref (sitter->error_watch);
+   if (!_dbus_watch_list_add_watch (sitter->watches,  sitter->error_watch))
+     {
+-      /* we need to free it early so the destructor won't try to remove it
+-       * without it having been added, which DBusLoop doesn't allow */
+       _dbus_watch_invalidate (sitter->error_watch);
+       _dbus_watch_unref (sitter->error_watch);
++      _dbus_watch_unref (sitter->error_watch);
+       sitter->error_watch = NULL;
+ 
+       dbus_set_error (error, DBUS_ERROR_NO_MEMORY, NULL);
+       goto cleanup_and_fail;
+     }
++  _dbus_watch_unref (sitter->error_watch);
+       
+   sitter->sitter_watch = _dbus_watch_new (babysitter_pipe[0].fd,
+                                           DBUS_WATCH_READABLE,
+@@ -1336,17 +1341,18 @@ _dbus_spawn_async_with_babysitter (DBusBabysitter          **sitter_p,
+       goto cleanup_and_fail;
+     }
+       
++  _dbus_watch_ref (sitter->sitter_watch);
+   if (!_dbus_watch_list_add_watch (sitter->watches,  sitter->sitter_watch))
+     {
+-      /* we need to free it early so the destructor won't try to remove it
+-       * without it having been added, which DBusLoop doesn't allow */
+       _dbus_watch_invalidate (sitter->sitter_watch);
+       _dbus_watch_unref (sitter->sitter_watch);
++      _dbus_watch_unref (sitter->sitter_watch);
+       sitter->sitter_watch = NULL;
+ 
+       dbus_set_error (error, DBUS_ERROR_NO_MEMORY, NULL);
+       goto cleanup_and_fail;
+     }
++  _dbus_watch_unref (sitter->sitter_watch);
+ 
+   _DBUS_ASSERT_ERROR_IS_CLEAR (error);
+ 
+-- 
+2.55.0
+
