@@ -1,0 +1,220 @@
+From 08a11492de3c863090d56d9cbc1e6b523f38189f Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 08:02:52 +0100
+Subject: [PATCH 1/5] test-utils: Initialise fds
+
+---
+ test/test-utils.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/test/test-utils.c b/test/test-utils.c
+index 475ee752..e67f7e23 100644
+--- a/test/test-utils.c
++++ b/test/test-utils.c
+@@ -544,6 +544,7 @@ _dbus_check_fdleaks_enter (void)
+   /* this is plain malloc so it won't interfere with leak checking */
+   fds = malloc (sizeof (DBusInitialFDs));
+   _dbus_assert (fds != NULL);
++  FD_ZERO (&fds->set);
+ 
+   /* This works on Linux only */
+ 
+-- 
+2.55.0
+
+
+From 67c2921ed84bf3a821a3d95231a308dc8b98fb69 Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 08:03:36 +0100
+Subject: [PATCH 2/5] dbus-sysdeps-unix: Ensure hostip is initialised
+
+---
+ dbus/dbus-sysdeps-unix.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/dbus/dbus-sysdeps-unix.c b/dbus/dbus-sysdeps-unix.c
+index 099637cb..58c279f1 100644
+--- a/dbus/dbus-sysdeps-unix.c
++++ b/dbus/dbus-sysdeps-unix.c
+@@ -4925,11 +4925,11 @@ _dbus_append_address_from_socket (DBusSocket  fd,
+ #ifdef AF_INET6
+     case AF_INET6:
+ #endif
+-       _dbus_string_init_const (&path_str, hostip);
+-
+       if (_dbus_inet_sockaddr_to_string (&socket, size, hostip, sizeof (hostip),
+                                          &family_name, &port, error))
+         {
++          _dbus_string_init_const (&path_str, hostip);
++
+           if (_dbus_string_append_printf (address, "tcp:family=%s,port=%u,host=",
+                                           family_name, port) &&
+               _dbus_address_append_escaped (address, &path_str))
+-- 
+2.55.0
+
+
+From 8efcd6bc6a363f69fae3bb3dc98cd88a3a4dae43 Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 08:04:59 +0100
+Subject: [PATCH 3/5] dbus-spawn-unix: Avoid unlikely use-after-free
+
+---
+ dbus/dbus-spawn-unix.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/dbus/dbus-spawn-unix.c b/dbus/dbus-spawn-unix.c
+index f3577e70..3911fbcd 100644
+--- a/dbus/dbus-spawn-unix.c
++++ b/dbus/dbus-spawn-unix.c
+@@ -552,9 +552,11 @@ close_socket_to_babysitter (DBusBabysitter *sitter)
+   if (sitter->sitter_watch != NULL)
+     {
+       _dbus_assert (sitter->watches != NULL);
++      _dbus_watch_ref (sitter->sitter_watch);
+       _dbus_watch_list_remove_watch (sitter->watches,  sitter->sitter_watch);
+       _dbus_watch_invalidate (sitter->sitter_watch);
+       _dbus_watch_unref (sitter->sitter_watch);
++      _dbus_watch_unref (sitter->sitter_watch);
+       sitter->sitter_watch = NULL;
+     }
+ 
+@@ -573,9 +575,11 @@ close_error_pipe_from_child (DBusBabysitter *sitter)
+   if (sitter->error_watch != NULL)
+     {
+       _dbus_assert (sitter->watches != NULL);
++      _dbus_watch_ref (sitter->error_watch);
+       _dbus_watch_list_remove_watch (sitter->watches,  sitter->error_watch);
+       _dbus_watch_invalidate (sitter->error_watch);
+       _dbus_watch_unref (sitter->error_watch);
++      _dbus_watch_unref (sitter->error_watch);
+       sitter->error_watch = NULL;
+     }
+ 
+@@ -1335,18 +1339,23 @@ _dbus_spawn_async_with_babysitter (DBusBabysitter          **sitter_p,
+       goto cleanup_and_fail;
+     }
+ 
++  _dbus_watch_ref (sitter->error_watch);
++
+   if (!_dbus_watch_list_add_watch (sitter->watches,  sitter->error_watch))
+     {
+       /* we need to free it early so the destructor won't try to remove it
+        * without it having been added, which DBusLoop doesn't allow */
+       _dbus_watch_invalidate (sitter->error_watch);
+       _dbus_watch_unref (sitter->error_watch);
++      _dbus_watch_unref (sitter->error_watch);
+       sitter->error_watch = NULL;
+ 
+       dbus_set_error (error, DBUS_ERROR_NO_MEMORY, NULL);
+       goto cleanup_and_fail;
+     }
+ 
++  _dbus_watch_unref (sitter->error_watch);
++
+   sitter->sitter_watch = _dbus_watch_new (babysitter_pipe[0].fd,
+                                           DBUS_WATCH_READABLE,
+                                           TRUE, handle_watch, sitter, NULL);
+@@ -1356,18 +1365,23 @@ _dbus_spawn_async_with_babysitter (DBusBabysitter          **sitter_p,
+       goto cleanup_and_fail;
+     }
+ 
++  _dbus_watch_ref (sitter->sitter_watch);
++
+   if (!_dbus_watch_list_add_watch (sitter->watches,  sitter->sitter_watch))
+     {
+       /* we need to free it early so the destructor won't try to remove it
+        * without it having been added, which DBusLoop doesn't allow */
+       _dbus_watch_invalidate (sitter->sitter_watch);
+       _dbus_watch_unref (sitter->sitter_watch);
++      _dbus_watch_unref (sitter->sitter_watch);
+       sitter->sitter_watch = NULL;
+ 
+       dbus_set_error (error, DBUS_ERROR_NO_MEMORY, NULL);
+       goto cleanup_and_fail;
+     }
+ 
++  _dbus_watch_unref (sitter->sitter_watch);
++
+   _DBUS_ASSERT_ERROR_IS_CLEAR (error);
+ 
+   if (flags & DBUS_SPAWN_SILENCE_OUTPUT)
+-- 
+2.55.0
+
+
+From 64b4495898448bb15037580fa2598d468feac560 Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 08:06:10 +0100
+Subject: [PATCH 4/5] dbus-connection: Avoid use-after-free
+
+---
+ dbus/dbus-connection.c | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/dbus/dbus-connection.c b/dbus/dbus-connection.c
+index e6fedbbe..95e7ae52 100644
+--- a/dbus/dbus-connection.c
++++ b/dbus/dbus-connection.c
+@@ -4219,15 +4219,19 @@ notify_disconnected_unlocked (DBusConnection *connection)
+   if (connection->n_outgoing > 0)
+     {
+       DBusList *link;
+-      
++
+       _dbus_verbose ("Dropping %d outgoing messages since we're disconnected\n",
+                      connection->n_outgoing);
+-      
++
++      _dbus_counter_ref (connection->outgoing_counter);
++
+       while ((link = _dbus_list_get_last_link (&connection->outgoing_messages)))
+         {
+           _dbus_connection_message_sent_unlocked (connection, link->data);
+         }
+-    } 
++
++      _dbus_counter_unref (connection->outgoing_counter);
++    }
+ }
+ 
+ /* Note this may be called multiple times since we don't track whether we already did it */
+-- 
+2.55.0
+
+
+From 21d6feae01b24c5ebd0f60c9601541ae112be941 Mon Sep 17 00:00:00 2001
+From: David King <dking@redhat.com>
+Date: Fri, 24 Jul 2026 08:07:06 +0100
+Subject: [PATCH 5/5] connection: Avoid a use-after-free
+
+---
+ bus/connection.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/bus/connection.c b/bus/connection.c
+index b912d89e..f49b6a41 100644
+--- a/bus/connection.c
++++ b/bus/connection.c
+@@ -1662,6 +1662,7 @@ bus_connections_reload_policy (BusConnections *connections,
+        link = _dbus_list_get_next_link (&(connections->completed), link))
+     {
+       BusClientPolicy *policy;
++      BusClientPolicy *old_policy;
+ 
+       connection = link->data;
+       d = BUS_CONNECTION_DATA (connection);
+@@ -1680,8 +1681,9 @@ bus_connections_reload_policy (BusConnections *connections,
+           return FALSE;
+         }
+ 
+-      bus_client_policy_unref (d->policy);
++      old_policy = d->policy;
+       d->policy = policy;
++      bus_client_policy_unref (old_policy);
+     }
+ 
+   return TRUE;
+-- 
+2.55.0
+

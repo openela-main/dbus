@@ -21,7 +21,7 @@
 Name:    dbus
 Epoch:   1
 Version: 1.14.10
-Release: 5%{?dist}
+Release: 6%{?dist}
 Summary: D-BUS message bus
 
 # The effective license of the majority of the package, including the shared
@@ -40,6 +40,8 @@ Source6: dbus.user.socket
 Source7: dbus-daemon.user.service
 Source8: dbus-systemd-sysusers.conf
 Patch0: 0001-tools-Use-Python3-for-GetAllMatchRules.patch
+# https://redhat.atlassian.net/browse/RHEL-45015
+Patch1: dbus-1.14.10-fix-SAST-warnings.patch
 
 BuildRequires: autoconf-archive
 BuildRequires: libtool
@@ -441,6 +443,9 @@ fi
 
 
 %changelog
+* Fri Jul 24 2026 David King <dking@redhat.com> - 1:1.14.10-6
+- Fix some SAST warnings (RHEL-45015)
+
 * Tue Oct 29 2024 Troy Dawson <tdawson@redhat.com> - 1:1.14.10-5
 - Bump release for October 2024 mass rebuild:
   Resolves: RHEL-64018
